@@ -165,4 +165,148 @@ union isa_t
 
 ```
 
+## 二. Class 的结构
+
+元类对象其实是一种特殊的类对象.
+
+meta-Class对象 和 Class对象的内部结构基本相同,只是各自存储的内容有所差别.
+
+### 1.Class 对象的底层结构.
+
+#### objc_class
+
+```c++
+struct objc_class {
+    Class isa;
+    Class superclass;
+    // 方法缓存
+    cache_t cache;
+    // 用来获取具体的类信息
+    class_data_bits_t bits;
+}
+```
+
+#### class_rw_t
+其中 `class_data_bits_t` 它`&`上掩码`FAST_DATA_MASK` 得到 `class_rw_t`,它是可读可写的,在运行时可以改其内容.
+
+```c++
+ class_rw_t * data() {
+        return (class_rw_t *)(bits & FAST_DATA_MASK);
+ }
+```
+
+`class_rw_t` 的结构:
+
+```c++
+struct class_rw_t {
+    // Be warned that Symbolication knows the layout of this structure.
+    uint32_t flags;
+    uint32_t version;
+
+    // 只读(readOnly),不可更改,里面有成员变量的结构体.
+    const class_ro_t *ro;
+
+    // 方法列表 (包含类及分类的)
+    method_array_t methods;
+    // 属性列表 (包含类及分类的)
+    property_array_t properties;
+    // 协议列表 (包含类及分类的)
+    protocol_array_t protocols;
+
+    Class firstSubclass;
+    Class nextSiblingClass;
+
+    char *demangledName;
+
+#if SUPPORT_INDEXED_ISA
+    uint32_t index;
+#endif
+
+    void setFlags(uint32_t set) 
+    {
+        OSAtomicOr32Barrier(set, &flags);
+    }
+
+    void clearFlags(uint32_t clear) 
+    {
+        OSAtomicXor32Barrier(clear, &flags);
+    }
+
+    // set and clear must not overlap
+    void changeFlags(uint32_t set, uint32_t clear) 
+    {
+        assert((set & clear) == 0);
+
+        uint32_t oldf, newf;
+        do {
+            oldf = flags;
+            newf = (oldf | set) & ~clear;
+        } while (!OSAtomicCompareAndSwap32Barrier(oldf, newf, (volatile int32_t *)&flags));
+    }
+};
+```
+
+##### method_array_t
+
+- `method_array_t` 是个二维数组,它里面装的是 `method_list_t`.
+
+- 而 `method_list_t` 里面装的是 `method_t`.
+- `property_array_t` 和`protocol_array_t`同理.
+
+
+```c++
+class method_array_t : 
+    public list_array_tt<method_t, method_list_t> 
+{
+    typedef list_array_tt<method_t, method_list_t> Super;
+
+ public:
+    method_list_t **beginCategoryMethodLists() {
+        return beginLists();
+    }
+    
+    method_list_t **endCategoryMethodLists(Class cls);
+
+    method_array_t duplicate() {
+        return Super::duplicate<method_array_t>();
+    }
+};
+```
+
+#### class_ro_t
+
+其中的 `baseMethodList` 、 `baseProtocols` 、 `ivars` 、 `baseProperties` 都是一维数组.并且是只读的.只包含当前类的初始内容,不包含分类的内容.
+
+```c++
+struct class_ro_t {
+    uint32_t flags;
+    uint32_t instanceStart;
+    
+    // 实例对象占用的内存空间
+    uint32_t instanceSize;
+#ifdef __LP64__
+    uint32_t reserved;
+#endif
+
+    const uint8_t * ivarLayout;
+    
+    // 类名
+    const char * name;
+    // 方法列表(一维数组)
+    method_list_t * baseMethodList;
+    // 协议列表(一维数组)
+    protocol_list_t * baseProtocols;
+    
+    // 成员变量列表
+    const ivar_list_t * ivars;
+
+    const uint8_t * weakIvarLayout;
+    // 属性列表(一维数组)
+    property_list_t *baseProperties;
+
+    method_list_t *baseMethods() const {
+        return baseMethodList;
+    }
+};
+```
 
