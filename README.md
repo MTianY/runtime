@@ -310,3 +310,102 @@ struct class_ro_t {
 };
 ```
 
+#### method_t
+
+`method_t` 是对方法/函数的封装.
+
+```c++
+struct method_t {
+
+    // 函数名
+    SEL name;
+    
+    // 编码(返回值类型、参数类型)
+    const char *types;
+    
+    // 指向函数的指针(函数地址)
+    IMP imp;
+
+    struct SortBySELAddress :
+        public std::binary_function<const method_t&,
+                                    const method_t&, bool>
+    {
+        bool operator() (const method_t& lhs,
+                         const method_t& rhs)
+        { return lhs.name < rhs.name; }
+    };
+};
+```
+
+#### cache_t
+
+使用`散列表`这种数据结构来缓存曾经调用过的方法,可以提高方法的查找速度.
+
+比如一个对象要调用其对象方法,其原理就是通过这个对象的`isa`指针,找到这个对象的方法列表`method_list_t`(二维数组,里面存的是`method_t`).然后遍历这个方法列表,找到对应的方法实现. 如果当前对象没有找到的话,那么会通过 `superclass` 指针,找到其父类,然后再遍历,如果还找不到,再通过`superclass`指针找其父类,直到找到基类为止.
+
+`如果没有方法缓存的话,每次都重复上面的流程,效率是非常低的.`
+
+所以当我们第一次调用方法时,如果方法存在,那么就会被缓存到当前这个类的方法缓存中.(如果一个类调用一个方法,这个类和其父类都找到,而是在基类中找到的,那么就会将这个方法缓存到`这个类`的方法缓存中),下次再调用这个方法的话,会通过`isa`找到这个类对象,然后直接从其方法缓存中去拿.
+
+- `cache_t`的底层结构如下
+
+```c++
+struct cache_t {
+
+    // 数组,里面装的散列表
+    struct bucket_t *_buckets;
+    
+    // 散列表的长度 - 1. (比如散列表长度为10, 那么其值就是 10-1 = 9)
+    mask_t _mask;
+    
+    // 已经缓存的方法数量
+    mask_t _occupied;
+
+public:
+    struct bucket_t *buckets();
+    mask_t mask();
+    mask_t occupied();
+    void incrementOccupied();
+    void setBucketsAndMask(struct bucket_t *newBuckets, mask_t newMask);
+    void initializeToEmpty();
+
+    mask_t capacity();
+    bool isConstantEmptyCache();
+    bool canBeFreed();
+
+    static size_t bytesForCapacity(uint32_t cap);
+    static struct bucket_t * endMarker(struct bucket_t *b, uint32_t cap);
+
+    void expand();
+    void reallocate(mask_t oldCapacity, mask_t newCapacity);
+    struct bucket_t * find(cache_key_t key, id receiver);
+
+    static void bad_cache(id receiver, SEL sel, Class isa) __attribute__((noreturn));
+};
+```
+
+- `struct bucket_t`
+
+找到 key, 如果和 SEL 相同,那么直接拿到函数地址,进行调用方法.
+
+```c++
+struct bucket_t {
+private:
+
+    // SEL 作为 key
+    cache_key_t _key;
+    
+    // 函数的内存地址
+    IMP _imp;
+
+public:
+    inline cache_key_t key() const { return _key; }
+    inline IMP imp() const { return (IMP)_imp; }
+    inline void setKey(cache_key_t newKey) { _key = newKey; }
+    inline void setImp(IMP newImp) { _imp = newImp; }
+
+    void set(cache_key_t newKey, IMP newImp);
+};
+```
+
+
